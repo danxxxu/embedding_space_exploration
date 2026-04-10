@@ -24,6 +24,7 @@ let params = {
 let gpsActive = false;
 let watchId = null;
 let gpsAccuracy = null;
+let gpsPermissionGranted = false;  // true once we've successfully acquired GPS at least once
 
 /* ── tilt sensor state ── */
 let tiltActive = false;
@@ -395,30 +396,44 @@ function startGPS() {
     return;
   }
 
-  // iOS requires a one-shot getCurrentPosition first (must be from a
-  // user gesture) before watchPosition will work reliably.
   setGPSStatus("requesting...", "warn");
 
-  navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      // permission granted — now start watching
-      onGPSPosition(pos);
-      gpsActive = true;
-      document.getElementById("btn-gps").textContent = "Stop GPS";
-      document.getElementById("btn-gps").classList.add("active");
+  // Flip UI to "Stop GPS" immediately so the user can always stop the session
+  // even if the first fix is slow to arrive.
+  gpsActive = true;
+  document.getElementById("btn-gps").textContent = "Stop GPS";
+  document.getElementById("btn-gps").classList.add("active");
 
-      // watchPosition: NO timeout. iOS throttles updates when the phone is
-      // stationary, and a timeout error would spuriously tear down the watch.
-      // maximumAge: 0 forces fresh readings; no timeout means we just wait
-      // however long it takes between updates.
-      watchId = navigator.geolocation.watchPosition(
-        onGPSPosition,
-        onGPSWatchError,
-        { enableHighAccuracy: true, maximumAge: 0 }
-      );
-    },
-    onGPSError,
-    { enableHighAccuracy: true, timeout: 15000 }
+  if (!gpsPermissionGranted) {
+    // First time this page load: iOS needs a one-shot getCurrentPosition
+    // from a user gesture to prompt for permission before watchPosition
+    // will work reliably.
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        gpsPermissionGranted = true;
+        onGPSPosition(pos);
+        beginWatch();
+      },
+      onGPSError,
+      { enableHighAccuracy: true, timeout: 15000 }
+    );
+  } else {
+    // Permission already granted — skip the bootstrap call (which tends to
+    // timeout on cold-restart because iOS releases the GPS chip on stopGPS).
+    // Start watching directly; the first fix arrives when iOS warms up.
+    beginWatch();
+  }
+}
+
+function beginWatch() {
+  // watchPosition: NO timeout. iOS throttles updates when the phone is
+  // stationary, and a timeout error would spuriously tear down the watch.
+  // maximumAge: 2000 lets a very-recent cached position satisfy the first
+  // callback so we don't sit at "requesting..." while waiting for a cold fix.
+  watchId = navigator.geolocation.watchPosition(
+    onGPSPosition,
+    onGPSWatchError,
+    { enableHighAccuracy: true, maximumAge: 2000 }
   );
 }
 
