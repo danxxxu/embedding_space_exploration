@@ -407,10 +407,14 @@ function startGPS() {
       document.getElementById("btn-gps").textContent = "Stop GPS";
       document.getElementById("btn-gps").classList.add("active");
 
+      // watchPosition: NO timeout. iOS throttles updates when the phone is
+      // stationary, and a timeout error would spuriously tear down the watch.
+      // maximumAge: 0 forces fresh readings; no timeout means we just wait
+      // however long it takes between updates.
       watchId = navigator.geolocation.watchPosition(
         onGPSPosition,
-        onGPSError,
-        { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 }
+        onGPSWatchError,
+        { enableHighAccuracy: true, maximumAge: 0 }
       );
     },
     onGPSError,
@@ -558,6 +562,8 @@ function checkImageAreaVibration() {
   wasInImageArea = inArea;
 }
 
+/* error handler for the initial getCurrentPosition (startup).
+   Any error here means we never acquired GPS, so reset the UI. */
 function onGPSError(err) {
   // err.code: 1 = PERMISSION_DENIED, 2 = POSITION_UNAVAILABLE, 3 = TIMEOUT
   let msg;
@@ -581,6 +587,25 @@ function onGPSError(err) {
   gpsActive = false;
   document.getElementById("btn-gps").textContent = "Start GPS";
   document.getElementById("btn-gps").classList.remove("active");
+}
+
+/* error handler for ongoing watchPosition events.
+   iOS fires transient POSITION_UNAVAILABLE / TIMEOUT errors between fixes;
+   we must NOT stop the watch or reset the UI for those — we just show a
+   warning and keep waiting. Only a permission denial actually kills it. */
+function onGPSWatchError(err) {
+  console.warn("GPS watch error:", err.code, err.message);
+
+  if (err.code === 1) {
+    // permission actually revoked — stop the watch
+    stopGPS();
+    setGPSStatus("denied — open Settings > Safari > Location", "err");
+    return;
+  }
+
+  // transient error: keep the watch alive, just reflect it in the status
+  let msg = err.code === 3 ? "waiting for fix..." : "signal lost...";
+  setGPSStatus(msg, "warn");
 }
 
 function setGPSStatus(text, cls) {
