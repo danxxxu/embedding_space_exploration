@@ -55,9 +55,6 @@ function setup() {
   let cnv = createCanvas(w, h, WEBGL);
   cnv.parent("canvas-3d");
 
-  // lower-poly spheres for the few highlighted points we actually draw as meshes
-  sphereDetail(8, 6);
-
   initMIDI();
   initControls();
   initImageCanvas();
