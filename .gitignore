@@ -1,0 +1,7 @@
+.DS_Store
+cert.pem
+key.pem
+*.pem
+node_modules/
+.vscode/
+.idea/

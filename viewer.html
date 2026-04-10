@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Embedding Viewer</title>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.12/lib/p5.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/addons/p5.sound.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0a0a;
+      color: #ddd;
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      overflow: hidden;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    #app {
+      display: flex;
+      height: 100vh;
+    }
+
+    /* ── control panel (left) ── */
+    #control-panel {
+      width: 220px;
+      min-width: 220px;
+      flex-shrink: 0;
+      background: #111;
+      border-right: 1px solid #222;
+      padding: 16px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    #control-panel h2 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #666;
+      margin-bottom: 4px;
+    }
+
+    .ctrl-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 5px;
+    }
+
+    .ctrl-group label {
+      font-size: 11px;
+      color: #888;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .ctrl-group label span {
+      color: #bbb;
+      font-weight: 600;
+    }
+
+    .ctrl-group input[type="range"] {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 4px;
+      background: #333;
+      border-radius: 2px;
+      outline: none;
+    }
+
+    .ctrl-group input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #7aa2f7;
+      cursor: pointer;
+    }
+
+    .ctrl-group select, .ctrl-group input[type="file"] {
+      background: #1a1a1a;
+      border: 1px solid #333;
+      color: #ccc;
+      padding: 4px 6px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-family: inherit;
+    }
+
+    .ctrl-divider {
+      border-top: 1px solid #222;
+    }
+
+    /* ── main 3d view (center) ── */
+    #canvas-3d {
+      flex: 1;
+      min-width: 200px;
+      background: #0a0a0a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    /* ── vertical splitter (between 3D and right sidebar) ── */
+    .splitter-v {
+      width: 6px;
+      min-width: 6px;
+      cursor: col-resize;
+      background: #181818;
+      border-left: 1px solid #222;
+      border-right: 1px solid #222;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .splitter-v:hover, .splitter-v.active {
+      background: #7aa2f7;
+      border-color: #7aa2f7;
+    }
+    .splitter-v::after {
+      content: '';
+      width: 2px;
+      height: 30px;
+      border-radius: 1px;
+      background: #444;
+    }
+    .splitter-v:hover::after, .splitter-v.active::after {
+      background: #fff;
+    }
+
+    /* ── horizontal splitter (between image and text previews) ── */
+    .splitter-h {
+      height: 6px;
+      min-height: 6px;
+      cursor: row-resize;
+      background: #181818;
+      border-top: 1px solid #222;
+      border-bottom: 1px solid #222;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .splitter-h:hover, .splitter-h.active {
+      background: #7aa2f7;
+      border-color: #7aa2f7;
+    }
+    .splitter-h::after {
+      content: '';
+      height: 2px;
+      width: 30px;
+      border-radius: 1px;
+      background: #444;
+    }
+    .splitter-h:hover::after, .splitter-h.active::after {
+      background: #fff;
+    }
+
+    /* ── right sidebar: image + text previews ── */
+    #right-sidebar {
+      width: 320px;
+      min-width: 150px;
+      flex-shrink: 0;
+      background: #0e0e0e;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .preview-section {
+      flex: 1;
+      min-height: 80px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .preview-header {
+      padding: 8px 12px;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #555;
+      background: #111;
+      border-bottom: 1px solid #1a1a1a;
+      flex-shrink: 0;
+    }
+
+    .preview-body {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px;
+      overflow: hidden;
+    }
+
+    #image-canvas-holder canvas {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+
+    #text-preview {
+      text-align: left;
+      width: 100%;
+      height: 100%;
+      overflow-y: auto;
+    }
+
+    #text-content {
+      font-size: 13px;
+      line-height: 1.6;
+      color: #ccc;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .empty-state {
+      color: #333;
+      font-size: 12px;
+      text-align: center;
+    }
+
+    .preview-meta {
+      padding: 6px 12px;
+      font-size: 10px;
+      color: #555;
+      background: #111;
+      border-top: 1px solid #1a1a1a;
+      flex-shrink: 0;
+    }
+
+    /* ── status badge ── */
+    #midi-status {
+      font-size: 10px;
+      padding: 3px 8px;
+      border-radius: 3px;
+      background: #1a1a1a;
+      color: #555;
+      text-align: center;
+    }
+
+    #midi-status.connected {
+      color: #9ece6a;
+      background: #1a2618;
+    }
+
+    /* dataset indicator dots */
+    .dataset-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      color: #666;
+    }
+
+    .dataset-badge .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #333;
+    }
+
+    .dataset-badge .dot.active { background: #7aa2f7; }
+    .dataset-badge .dot.image { background: #f7768e; }
+    .dataset-badge .dot.text { background: #9ece6a; }
+
+    .toggle-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+    }
+    .toggle-label input[type="checkbox"] {
+      -webkit-appearance: none;
+      width: 28px;
+      height: 14px;
+      background: #333;
+      border-radius: 7px;
+      position: relative;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .toggle-label input[type="checkbox"]::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #666;
+      transition: transform 0.2s, background 0.2s;
+    }
+    .toggle-label input[type="checkbox"]:checked {
+      background: #2d4a8a;
+    }
+    .toggle-label input[type="checkbox"]:checked::after {
+      transform: translateX(14px);
+      background: #7aa2f7;
+    }
+    .toggle-text { color: #888; }
+
+    body.dragging { user-select: none; cursor: col-resize; }
+    body.dragging-h { user-select: none; cursor: row-resize; }
+  </style>
+</head>
+
+<body>
+  <div id="app">
+    <!-- left: control panel -->
+    <div id="control-panel">
+      <div>
+        <h2>Datasets</h2>
+        <div class="ctrl-group">
+          <label>Image dataset <span class="dataset-badge"><span class="dot image active" id="img-dot"></span></span></label>
+          <input type="file" id="load-image-json" accept=".json" />
+          <label>Text dataset <span class="dataset-badge"><span class="dot text" id="txt-dot"></span></span></label>
+          <input type="file" id="load-text-json" accept=".json" />
+        </div>
+      </div>
+
+      <div class="ctrl-divider"></div>
+
+      <div>
+        <h2>Cursor</h2>
+        <div class="ctrl-group">
+          <label>Range <span id="range-val">0.15</span></label>
+          <input type="range" id="cursor-range" min="0.01" max="1.0" step="0.01" value="0.15" />
+        </div>
+        <div class="ctrl-group">
+          <label>Size <span id="cursor-size-val">0.08</span></label>
+          <input type="range" id="cursor-size" min="0.02" max="0.3" step="0.01" value="0.08" />
+        </div>
+      </div>
+
+      <div class="ctrl-divider"></div>
+
+      <div>
+        <h2>Display</h2>
+        <div class="ctrl-group">
+          <label>Point size <span id="point-size-val">0.02</span></label>
+          <input type="range" id="point-size" min="0.005" max="0.1" step="0.005" value="0.02" />
+        </div>
+        <div class="ctrl-group">
+          <label>Highlight size <span id="highlight-size-val">0.035</span></label>
+          <input type="range" id="highlight-size" min="0.01" max="0.15" step="0.005" value="0.035" />
+        </div>
+      </div>
+
+      <div class="ctrl-divider"></div>
+
+      <div>
+        <h2>Image Blend</h2>
+        <div class="ctrl-group">
+          <label class="toggle-label">
+            <input type="checkbox" id="blend-toggle" />
+            <span class="toggle-text">Enable blend</span>
+          </label>
+        </div>
+        <div class="ctrl-group">
+          <label>Offset strength <span id="blend-offset-val">1.00</span></label>
+          <input type="range" id="blend-offset" min="0" max="3.0" step="0.05" value="1.0" />
+        </div>
+        <div class="ctrl-group">
+          <label>Max opacity <span id="blend-max-alpha-val">1.00</span></label>
+          <input type="range" id="blend-max-alpha" min="0.5" max="1.0" step="0.01" value="1.0" />
+        </div>
+        <div class="ctrl-group">
+          <label>Min opacity <span id="blend-min-alpha-val">0.05</span></label>
+          <input type="range" id="blend-min-alpha" min="0" max="0.5" step="0.01" value="0.05" />
+        </div>
+        <div class="ctrl-group" id="blend-count-display">
+          <label>Images blended <span id="blend-count">0</span></label>
+        </div>
+      </div>
+
+      <div class="ctrl-divider"></div>
+
+      <div>
+        <h2>MIDI</h2>
+        <div id="midi-status">disconnected</div>
+      </div>
+
+      <div style="margin-top: auto;">
+        <div class="ctrl-group">
+          <label>X <span id="pos-x">0.00</span></label>
+          <label>Y <span id="pos-y">0.00</span></label>
+          <label>Z <span id="pos-z">0.00</span></label>
+        </div>
+      </div>
+    </div>
+
+    <!-- center: 3D view -->
+    <div id="canvas-3d"></div>
+
+    <!-- vertical splitter -->
+    <div class="splitter-v" id="splitter-v"></div>
+
+    <!-- right: preview panels -->
+    <div id="right-sidebar">
+      <div class="preview-section" id="image-section">
+        <div class="preview-header">Image Preview</div>
+        <div class="preview-body" id="image-canvas-holder">
+          <div class="empty-state">No image in range</div>
+        </div>
+        <div class="preview-meta" id="image-meta"></div>
+      </div>
+
+      <!-- horizontal splitter -->
+      <div class="splitter-h" id="splitter-h"></div>
+
+      <div class="preview-section" id="text-section">
+        <div class="preview-header">Text Preview</div>
+        <div class="preview-body" id="text-preview">
+          <div class="empty-state">No text in range</div>
+        </div>
+        <div class="preview-meta" id="text-meta"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  /* ── splitter drag logic ── */
+  (function() {
+    const splitterV = document.getElementById('splitter-v');
+    const splitterH = document.getElementById('splitter-h');
+    const canvas3d = document.getElementById('canvas-3d');
+    const sidebar = document.getElementById('right-sidebar');
+    const imageSection = document.getElementById('image-section');
+    const textSection = document.getElementById('text-section');
+
+    /* vertical splitter: resize 3D canvas vs right sidebar */
+    let draggingV = false;
+    splitterV.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      draggingV = true;
+      splitterV.classList.add('active');
+      document.body.classList.add('dragging');
+    });
+
+    /* horizontal splitter: resize image vs text preview */
+    let draggingH = false;
+    splitterH.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      draggingH = true;
+      splitterH.classList.add('active');
+      document.body.classList.add('dragging-h');
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (draggingV) {
+        let controlPanelWidth = document.getElementById('control-panel').offsetWidth;
+        let splitterWidth = splitterV.offsetWidth;
+        let totalWidth = window.innerWidth - controlPanelWidth - splitterWidth;
+        let mouseFromPanel = e.clientX - controlPanelWidth;
+        let canvasWidth = Math.max(200, Math.min(mouseFromPanel, totalWidth - 150));
+        let sidebarWidth = totalWidth - canvasWidth;
+        canvas3d.style.flex = 'none';
+        canvas3d.style.width = canvasWidth + 'px';
+        sidebar.style.width = sidebarWidth + 'px';
+        // notify p5 canvases to resize
+        window.dispatchEvent(new Event('resize'));
+      }
+      if (draggingH) {
+        let sidebarRect = sidebar.getBoundingClientRect();
+        let splitterHeight = splitterH.offsetHeight;
+        // account for header/meta heights
+        let availableHeight = sidebarRect.height - splitterHeight;
+        let mouseFromTop = e.clientY - sidebarRect.top;
+        let imageHeight = Math.max(80, Math.min(mouseFromTop, availableHeight - 80));
+        let textHeight = availableHeight - imageHeight;
+        imageSection.style.flex = 'none';
+        imageSection.style.height = imageHeight + 'px';
+        textSection.style.flex = 'none';
+        textSection.style.height = textHeight + 'px';
+        // notify p5 image canvas to resize
+        window.dispatchEvent(new Event('resize'));
+      }
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (draggingV) {
+        draggingV = false;
+        splitterV.classList.remove('active');
+        document.body.classList.remove('dragging');
+      }
+      if (draggingH) {
+        draggingH = false;
+        splitterH.classList.remove('active');
+        document.body.classList.remove('dragging-h');
+      }
+    });
+  })();
+  </script>
+  <script src="sketch.js"></script>
+</body>
+</html>
