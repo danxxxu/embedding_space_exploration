@@ -210,13 +210,16 @@ function getDepth(point) {
   return point[axes.depth];
 }
 
-/* full 3D distance in embedding space between cursor and a point */
-function embeddingDist(point) {
+/* 2D distance on the mapped plane between cursor and a point.
+   Depth is handled separately by inDepthRange(), so proximity detection
+   uses only the two axes the user physically walks through. This prevents
+   the depth component from dominating the distance and hiding nearby
+   points that the user is standing right on top of. */
+function embeddingDist2D(point) {
   let axes = getAxes();
   let dH = cursor.h - point[axes.h];
   let dV = cursor.v - point[axes.v];
-  let dD = params.depthCenter - getDepth(point);
-  return Math.sqrt(dH * dH + dV * dV + dD * dD);
+  return Math.sqrt(dH * dH + dV * dV);
 }
 
 /* is a point within the depth slab? */
@@ -311,7 +314,7 @@ function highlightNearby() {
       continue;
     }
 
-    let d = embeddingDist(p);
+    let d = embeddingDist2D(p);
     if (d < globalNearest) globalNearest = d;
 
     let inRange = d < params.cursorRange;
