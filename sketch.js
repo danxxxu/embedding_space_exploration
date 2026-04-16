@@ -7,6 +7,13 @@ let clusterBuckets = [];     // [{color:[r,g,b], image:[p,...], text:[p,...]}] f
 let midiX = 0, midiY = 0, midiZ = 0;
 let cursor = { x: 0, y: 0, z: 0 };
 
+// input mode: "midi" or "keyboard"
+let inputMode = "keyboard";
+
+// keyboard cursor state (normalized 0–1, start at center)
+let keyX = 0.5, keyY = 0.5, keyZ = 0.5;
+let keyStep = 0.008;   // movement per frame when key is held
+
 // MIDI CC mapping (nanoKONTROL2)
 const CC_X = 16;
 const CC_Y = 17;
@@ -24,7 +31,7 @@ let params = {
   cursorSize: 0.08,
   pointSize: 0.02,
   highlightSize: 0.035,
-  blendEnabled: false,
+  blendMode: "off",    // "off" | "opacity" | "pixel"
   blendOffsetStrength: 1.0,
   blendMaxAlpha: 1.0,
   blendMinAlpha: 0.05,
@@ -39,6 +46,7 @@ let lastImageSrc = "";
 let imageCache = {};        // src -> p5.Image
 let blendQueue = [];        // [{img, alpha, offsetX, offsetY}, ...] set each frame
 let blendQueueDirty = false;
+let pixelBlendBuffer = null;   // off-screen graphics for pixel blend compositing
 
 /* ── main p5 sketch ── */
 function preload() {
@@ -157,10 +165,22 @@ function onMIDIMessage(msg) {
   if (cc === CC_X) midiX = n;
   if (cc === CC_Y) midiY = n;
   if (cc === CC_Z) midiZ = n;
+
+  // auto-switch to MIDI when a knob is moved
+  if (inputMode !== "midi" && (cc === CC_X || cc === CC_Y || cc === CC_Z)) {
+    inputMode = "midi";
+    document.getElementById("input-mode").value = "midi";
+  }
 }
 
 /* ── control panel bindings ── */
 function initControls() {
+  // input mode
+  document.getElementById("input-mode").addEventListener("change", (e) => {
+    inputMode = e.target.value;
+  });
+  bindSlider("key-speed", "key-speed-val", (v) => keyStep = v);
+
   bindSlider("cursor-range", "range-val", (v) => params.cursorRange = v);
   bindSlider("cursor-size", "cursor-size-val", (v) => params.cursorSize = v);
   bindSlider("point-size", "point-size-val", (v) => params.pointSize = v);
@@ -169,10 +189,10 @@ function initControls() {
   bindSlider("blend-max-alpha", "blend-max-alpha-val", (v) => params.blendMaxAlpha = v);
   bindSlider("blend-min-alpha", "blend-min-alpha-val", (v) => params.blendMinAlpha = v);
 
-  document.getElementById("blend-toggle").addEventListener("change", (e) => {
-    params.blendEnabled = e.target.checked;
-    // clear blend state when toggling off
-    if (!params.blendEnabled) {
+  document.getElementById("blend-mode").addEventListener("change", (e) => {
+    params.blendMode = e.target.value;
+    // clear blend state when switching modes
+    if (params.blendMode === "off") {
       blendQueue = [];
       blendQueueDirty = true;
       imgSketch.redraw();
@@ -238,8 +258,10 @@ function initImageCanvas() {
     s.draw = () => {
       s.background(14);
 
-      // ── blend mode ──
-      if (params.blendEnabled) {
+      let isBlend = params.blendMode !== "off";
+
+      // ── blend modes (opacity or pixel) ──
+      if (isBlend) {
         if (blendQueue.length === 0) {
           s.fill(50); s.noStroke();
           s.textAlign(s.CENTER, s.CENTER); s.textSize(12);
@@ -247,35 +269,37 @@ function initImageCanvas() {
           return;
         }
 
-        // draw farthest first (lowest alpha), closest last (highest alpha)
-        for (let entry of blendQueue) {
-          let img = entry.img;
-          if (!img || img.width === 0) continue;
+        if (params.blendMode === "opacity") {
+          // draw farthest first (lowest alpha), closest last (highest alpha)
+          for (let entry of blendQueue) {
+            let img = entry.img;
+            if (!img || img.width === 0) continue;
 
-          let aspect = img.width / img.height;
-          let drawW, drawH;
-          if (aspect > s.width / s.height) {
-            drawW = s.width;
-            drawH = s.width / aspect;
-          } else {
-            drawH = s.height;
-            drawW = s.height * aspect;
+            let aspect = img.width / img.height;
+            let drawW, drawH;
+            if (aspect > s.width / s.height) {
+              drawW = s.width;
+              drawH = s.width / aspect;
+            } else {
+              drawH = s.height;
+              drawW = s.height * aspect;
+            }
+
+            let cx = (s.width - drawW) / 2;
+            let cy = (s.height - drawH) / 2;
+
+            let shiftX = -entry.offsetX * params.blendOffsetStrength * drawW;
+            let shiftY = -entry.offsetY * params.blendOffsetStrength * drawH;
+
+            s.tint(255, entry.alpha);
+            s.image(img, cx + shiftX, cy + shiftY, drawW, drawH);
           }
+          s.noTint();
 
-          // center position
-          let cx = (s.width - drawW) / 2;
-          let cy = (s.height - drawH) / 2;
-
-          // offset: shift image based on its 3D position relative to cursor
-          // if point is to the right of cursor (offsetX > 0), shift image left
-          // so only its left portion (closer to cursor side) is visible
-          let shiftX = -entry.offsetX * params.blendOffsetStrength * drawW;
-          let shiftY = -entry.offsetY * params.blendOffsetStrength * drawH;
-
-          s.tint(255, entry.alpha);
-          s.image(img, cx + shiftX, cy + shiftY, drawW, drawH);
+        } else if (params.blendMode === "pixel") {
+          // ── pixel-value weighted average ──
+          drawPixelBlend(s);
         }
-        s.noTint();
         return;
       }
 
@@ -301,6 +325,75 @@ function initImageCanvas() {
       s.image(loadedImg, x, y, drawW, drawH);
     };
   });
+}
+
+/* ── pixel blend: GPU-accelerated weighted average via incremental alpha ──
+   Instead of reading pixels in JS, we use a compositing trick:
+     draw image 1 at alpha = 1.0
+     draw image 2 at alpha = w2 / (w1 + w2)
+     draw image 3 at alpha = w3 / (w1 + w2 + w3)
+     ...
+   This produces a mathematically exact weighted average using only the
+   canvas alpha compositor — no loadPixels, no per-pixel loops. */
+function drawPixelBlend(s) {
+  // create / resize the off-screen 2D buffer as needed
+  if (!pixelBlendBuffer || pixelBlendBuffer.width !== s.width || pixelBlendBuffer.height !== s.height) {
+    if (pixelBlendBuffer) pixelBlendBuffer.remove();
+    pixelBlendBuffer = s.createGraphics(s.width, s.height);
+  }
+
+  // collect loaded images and their raw weights
+  let entries = [];
+  for (let entry of blendQueue) {
+    if (!entry.img || entry.img.width === 0) continue;
+    let w = entry.alpha / 255; // closer = higher weight
+    entries.push({ img: entry.img, weight: w, offsetX: entry.offsetX, offsetY: entry.offsetY });
+  }
+  if (entries.length === 0) return;
+
+  // sort by weight ascending so lightest (farthest) is drawn first,
+  // heaviest (closest) last — last image has greatest influence
+  entries.sort((a, b) => a.weight - b.weight);
+
+  let buf = pixelBlendBuffer;
+  // access the underlying 2D canvas context for globalAlpha control
+  let ctx = buf.drawingContext;
+
+  buf.clear();
+
+  let cumWeight = 0;
+  for (let i = 0; i < entries.length; i++) {
+    let e = entries[i];
+    cumWeight += e.weight;
+
+    // incremental alpha: this image's share of the running total
+    let alpha = (i === 0) ? 1.0 : e.weight / cumWeight;
+
+    let img = e.img;
+    let aspect = img.width / img.height;
+    let drawW, drawH;
+    if (aspect > buf.width / buf.height) {
+      drawW = buf.width;
+      drawH = buf.width / aspect;
+    } else {
+      drawH = buf.height;
+      drawW = buf.height * aspect;
+    }
+
+    let cx = (buf.width - drawW) / 2;
+    let cy = (buf.height - drawH) / 2;
+
+    // apply positional offset (same as opacity mode)
+    let shiftX = -e.offsetX * params.blendOffsetStrength * drawW;
+    let shiftY = -e.offsetY * params.blendOffsetStrength * drawH;
+
+    ctx.globalAlpha = alpha;
+    buf.image(img, cx + shiftX, cy + shiftY, drawW, drawH);
+  }
+  ctx.globalAlpha = 1.0;
+
+  // draw the composited buffer to the main canvas
+  s.image(buf, 0, 0, s.width, s.height);
 }
 
 /* ── image cache helper ── */
@@ -404,9 +497,16 @@ function draw() {
   scale(120);
   drawAxes(4);
 
-  cursor.x = map(midiX, 0, 1, bounds.minX, bounds.maxX);
-  cursor.y = map(midiY, 0, 1, bounds.minY, bounds.maxY);
-  cursor.z = map(midiZ, 0, 1, bounds.minZ, bounds.maxZ);
+  if (inputMode === "keyboard") {
+    updateKeyboardCursor();
+    cursor.x = map(keyX, 0, 1, bounds.minX, bounds.maxX);
+    cursor.y = map(keyY, 0, 1, bounds.minY, bounds.maxY);
+    cursor.z = map(keyZ, 0, 1, bounds.minZ, bounds.maxZ);
+  } else {
+    cursor.x = map(midiX, 0, 1, bounds.minX, bounds.maxX);
+    cursor.y = map(midiY, 0, 1, bounds.minY, bounds.maxY);
+    cursor.z = map(midiZ, 0, 1, bounds.minZ, bounds.maxZ);
+  }
 
   // update position readout
   document.getElementById("pos-x").textContent = cursor.x.toFixed(2);
@@ -418,6 +518,29 @@ function draw() {
   drawPoints();
   drawCursor();
   drawCursorCrosshair();
+}
+
+/* ── keyboard cursor movement ── */
+function updateKeyboardCursor() {
+  // Left/Right → X (red axis)
+  if (keyIsDown(LEFT_ARROW))  keyX = Math.max(0, keyX - keyStep);
+  if (keyIsDown(RIGHT_ARROW)) keyX = Math.min(1, keyX + keyStep);
+  // A/S → Y (green axis)
+  if (keyIsDown(65))          keyY = Math.max(0, keyY - keyStep); // A
+  if (keyIsDown(83))          keyY = Math.min(1, keyY + keyStep); // S
+  // Up/Down → Z (blue axis)
+  if (keyIsDown(UP_ARROW))    keyZ = Math.max(0, keyZ - keyStep);
+  if (keyIsDown(DOWN_ARROW))  keyZ = Math.min(1, keyZ + keyStep);
+}
+
+/* prevent arrow keys from scrolling the page */
+function keyPressed() {
+  if (inputMode === "keyboard") {
+    if (keyCode === LEFT_ARROW || keyCode === RIGHT_ARROW ||
+        keyCode === UP_ARROW || keyCode === DOWN_ARROW) {
+      return false; // suppress default browser behavior
+    }
+  }
 }
 
 /* ── drawing functions ── */
@@ -524,7 +647,7 @@ function drawPoints() {
   }
 
   // update image preview
-  if (params.blendEnabled) {
+  if (params.blendMode !== "off") {
     updateBlendQueue(inRangeImages);
     if (inRangeImages.length > 0) {
       document.getElementById("image-meta").textContent =
